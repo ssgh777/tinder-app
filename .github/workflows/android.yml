@@ -32,7 +32,7 @@ jobs:
           cmdline-tools-version: '15859902'
           accept-android-sdk-licenses: 'true'
           log-accepted-android-sdk-licenses: 'false'
-          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+          packages: 'platform-tools platforms;android-25 build-tools;25.0.3 platforms;android-35 build-tools;35.0.0'
 
       - name: Locate Gradle wrapper
         id: gradle
@@ -52,10 +52,10 @@ jobs:
           echo "wrapper=$WRAPPER" >> "$GITHUB_OUTPUT"
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
-          echo "Wrapper: $WRAPPER"
-          echo "Project: $PROJECT_DIR"
+          echo "Gradle wrapper: $WRAPPER"
+          echo "Project directory: $PROJECT_DIR"
 
-      - name: Switch to Java 8 for legacy Gradle
+      - name: Set up Java 8 for legacy Gradle
         uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -66,10 +66,13 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
+
+          chmod +x "${GITHUB_WORKSPACE}/${{ steps.gradle.outputs.wrapper }}"
+
           "${GITHUB_WORKSPACE}/${{ steps.gradle.outputs.wrapper }}" \
             --no-daemon assembleDebug --stacktrace
 
-      - name: Find APK
+      - name: Find generated APK
         id: apk
         if: success()
         shell: bash
@@ -79,12 +82,12 @@ jobs:
             -print -quit)"
 
           if [ -z "$APK" ]; then
-            echo "::error::Build completed but no APK was generated."
+            echo "::error::Build completed but no APK was found."
             exit 1
           fi
 
           echo "path=$APK" >> "$GITHUB_OUTPUT"
-          echo "Generated: $APK"
+          echo "Found APK: $APK"
 
       - name: Upload APK
         if: success()
