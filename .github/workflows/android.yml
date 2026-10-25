@@ -1,52 +1,118 @@
-
 name: Build Android APK
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - master
+      - main
 
 permissions:
   contents: read
 
 jobs:
   build:
+    name: Build debug APK
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+
     steps:
-      - name: Download source
+      - name: Checkout source
         uses: actions/checkout@v4
 
+      - name: Locate Gradle wrapper
+        id: gradle
+        shell: bash
+        run: |
+          WRAPPER="$(find . -type f -name gradlew -print -quit)"
+          if [ -z "$WRAPPER" ]; then
+            echo "::error::No gradlew file found. This repository may not contain a complete Android Gradle project."
+            echo "Project files:"
+            find . -maxdepth 3 -type f | head -200
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$WRAPPER")"
+          chmod +x "$WRAPPER"
+
+          echo "wrapper=$WRAPPER" >> "$GITHUB_OUTPUT"
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+          echo "Gradle wrapper: $WRAPPER"
+          echo "Project directory: $PROJECT_DIR"
+
       - name: Set up Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '8'
 
-      - name: Inspect project and Android SDK metadata
-        run: |
-          pwd
-          ls -la
-          find . \( -name gradlew -o -name settings.gradle -o -name settings.gradle.kts \) -print
-          echo "Android SDK: $ANDROID_HOME"
-          find "$ANDROID_HOME" -name 'package.xml' -type f -print0 |
-            xargs -0 grep -n -B 2 -A 2 '<api-level>37\.1</api-level>' || true
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
 
-      - name: Build APK
+      - name: Install Android build tools
+        shell: bash
         run: |
-          WRAPPER="$(find . -type f -name gradlew -print -quit)"
-          if [ -z "$WRAPPER" ]; then
-            echo "ERROR: No Gradle wrapper found in repository."
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      - name: Show project configuration
+        shell: bash
+        run: |
+          echo "Gradle wrapper version:"
+          grep -n "distributionUrl" \
+            "$(dirname "${{ steps.gradle.outputs.wrapper }}")/gradle/wrapper/gradle-wrapper.properties" \
+            || true
+
+          echo "Android project files:"
+          find "${{ steps.gradle.outputs.project_dir }}" \
+            -maxdepth 3 \
+            \( -name build.gradle -o \
+               -name build.gradle.kts -o \
+               -name settings.gradle -o \
+               -name settings.gradle.kts -o \
+               -name gradle.properties \) \
+            -print
+
+      - name: Build debug APK
+        working-directory: ${{ steps.gradle.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -o pipefail
+          "${GITHUB_WORKSPACE}/${{ steps.gradle.outputs.wrapper }}" \
+            --no-daemon assembleDebug --stacktrace
+
+      - name: Find generated APK
+        if: success()
+        id: apk
+        shell: bash
+        run: |
+          APK="$(find "${{ steps.gradle.outputs.project_dir }}" \
+            -type f -path '*/build/outputs/apk/*/*.apk' \
+            -print -quit)"
+
+          if [ -z "$APK" ]; then
+            echo "::error::Build finished but no APK was found."
             exit 1
           fi
-          PROJECT_DIR="$(dirname "$WRAPPER")"
-          cd "$PROJECT_DIR"
-          chmod +x gradlew
-          ./gradlew assembleDebug --stacktrace
+
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
+          echo "APK generated: $APK"
 
       - name: Upload APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: tinder-debug-apk
-          path: '**/build/outputs/apk/debug/*.apk'
+          path: ${{ steps.apk.outputs.path }}
           if-no-files-found: error
           retention-days: 7
-          
+
+      - name: Show build failure details
+        if: failure()
+        run: |
+          echo "The build failed. Check the first actual error above this step."
+          echo "This workflow cannot automatically repair incompatible source code or an unsupported Gradle/Android plugin version."
